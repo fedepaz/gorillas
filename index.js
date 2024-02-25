@@ -1,10 +1,14 @@
 let state = {}
 
+let numberOfPlayers = 1;
+
 let isDragging = false;
 let dragStartX = 0;
 let dragStarty = 0;
 
 let previousAnimationTimestamp = undefined;
+let simulationMode = false;
+let simulationImpact = {};
 
 const canvas = document.getElementById("game");
 
@@ -33,6 +37,7 @@ function newGame() {
     state = {
         phase: "aiming",
         currentPlayer: 1,
+        round: 1,
         bomb: {
             x: undefined,
             y: undefined,
@@ -61,6 +66,8 @@ function newGame() {
     velocity2DOM.innerText = 0;
 
     draw()
+
+    if (numberOfPlayers === 0) comoputerThrow()
 
 }
 
@@ -216,9 +223,36 @@ function drawGorilla(player) {
     drawGorillaLeftArm(player);
     drawGorillaRightArm(player);
     drawGorillaFace(player);
+    drawGorillaThoughtBubbles(player);
 
 
     ctx.restore()
+}
+
+function drawGorillaThoughtBubbles(player) {
+    if (state.phase === "aiming") {
+        const currentPlayerIsComputer =
+            (numberOfPlayers === 0 && state.currentPlayer === 1 && player === 1) ||
+            (numberOfPlayers !== 2 && state.currentPlayer === 2 && player === 2)
+        if (currentPlayerIsComputer) {
+            ctx.save()
+            ctx.scale(1, -1);
+
+            ctx.font = "20px sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillText("?", 0, -90);
+
+            ctx.font = "10px sans-serif"
+
+            ctx.rotate((5 / 180) * Math.PI)
+            ctx.fillText("?", 0, -90);
+
+            ctx.rotate((-10 / 180) * Math.PI)
+            ctx.fillText("?", 0, -90);
+
+            ctx.restore();
+        }
+    }
 }
 
 function drawGorillaBody() {
@@ -446,9 +480,15 @@ function setInfo(deltaX, deltaY) {
 }
 
 function throwBomb() {
-    state.phase = "in flight";
-    previousAnimationTimestamp = undefined;
-    requestAnimationFrame(animate);
+
+    if (simulationMode) {
+        previousAnimationTimestamp = 0;
+        animate(16)
+    } else {
+        state.phase = "in flight";
+        previousAnimationTimestamp = undefined;
+        requestAnimationFrame(animate);
+    }
 }
 
 function animate(timestamp) {
@@ -458,40 +498,52 @@ function animate(timestamp) {
         return;
     }
 
-
     const elapsedTime = timestamp - previousAnimationTimestamp
 
     const hitDetectionPrecision = 10;
+
     for (let i = 0; i < hitDetectionPrecision; i++) {
-
-
         moveBomb(elapsedTime / hitDetectionPrecision)
-
 
         const miss = checkFrameHit() || checkBuildingHit();
         const hit = checkGorillaHit();
 
+        if (simulationMode && (hit || miss)) {
+            simulationImpact = { x: state.bomb.x, y: state.bomb.y }
+            return
+        }
+
         if (miss) {
             state.currentPlayer = state.currentPlayer === 1 ? 2 : 1;
+            if (state.currentPlayer === 1) state.round++
             state.phase = "aiming";
             initializeBombPosition()
 
             draw()
 
+            const comoputerThrowNext =
+                numberOfPlayers === 0 ||
+                (numberOfPlayers === 1 && state.currentPlayer === 2)
+
+            if (comoputerThrowNext) setTimeout(comoputerThrow, 50)
             return
         }
         if (hit) {
             state.phase = "celebrating"
             announceWinner()
+
             draw();
             return
         }
     }
-
-    draw()
+    if (!simulationMode) draw();
 
     previousAnimationTimestamp = timestamp
-    requestAnimationFrame(animate)
+    if (simulationMode) {
+        animate(timestamp + 16)
+    } else {
+        requestAnimationFrame(animate)
+    }
 }
 
 function moveBomb(elapsedTime) {
@@ -534,7 +586,9 @@ function checkBuildingHit() {
                     return false
                 }
             }
-            state.blastHoles.push({ x: state.bomb.x, y: state.bomb.y })
+            if (!simulationMode) {
+                state.blastHoles.push({ x: state.bomb.x, y: state.bomb.y })
+            }
             return true
         }
     }
@@ -591,3 +645,58 @@ function announceWinner() {
 }
 
 newGameButtonDOM.addEventListener("click", newGame)
+
+function runSimulations(numberOfSimulations) {
+    let bestThrow = { velocityX: undefined, velocityY: undefined, distance: Infinity };
+    simulationMode = true;
+
+    const enemyBuilding =
+        state.currentPlayer === 1
+            ? state.buildings.at(-2)
+            : state.buildings.at(1);
+    const enemyX = enemyBuilding.x + enemyBuilding.width / 2;
+    const enemyY = enemyBuilding.height + 30;
+
+    for (let i = 0; i < numberOfSimulations; i++) {
+        const angleInDegrees = 0 + Math.random() * 90;
+        const angleInRadians = (angleInDegrees / 180) * Math.PI;
+        const velocity = 40 + Math.random() * 100;
+
+        const direction = state.currentPlayer === 1 ? 1 : -1;
+        const velocityX = Math.cos(angleInRadians) * velocity * direction;
+        const velocityY = Math.sin(angleInRadians) * velocity
+
+        initializeBombPosition()
+        state.bomb.velocity.x = velocityX
+        state.bomb.velocity.y = velocityY
+
+        throwBomb()
+
+        const distance = Math.sqrt(
+            (enemyX - simulationImpact.x) ** 2 + (enemyY - simulationImpact.y) ** 2
+        )
+
+        if (distance < bestThrow.distance) {
+            bestThrow = { velocityX, velocityY, distance }
+        }
+    }
+
+    simulationMode = false;
+    return bestThrow
+
+}
+
+function comoputerThrow() {
+    const numberOfSimulations = 2 + state.round * 3
+    const bestThrow = runSimulations(numberOfSimulations)
+
+    initializeBombPosition()
+    state.bomb.velocity.x = bestThrow.velocityX
+    state.bomb.velocity.y = bestThrow.velocityY
+
+    setInfo(bestThrow.velocityX, bestThrow.velocityY)
+
+    draw()
+
+    setTimeout(throwBomb, 1000)
+}
